@@ -91,7 +91,6 @@ const highlightedMessageId = ref<string | null>(null);
 let highlightTimer: number | null = null;
 
 const visibleKeys = ref<Set<string>>(new Set());
-const FADE_IN_DELAY_MS = 30;
 let isInitialLoad = true;
 
 function label(conversation: Conversation | null) {
@@ -380,6 +379,8 @@ watch(
     await nextTick();
     // In jump mode, don't auto-scroll
     if (props.isJumpMode) return;
+    // Don't interfere with scroll restoration when loading older messages
+    if (scrollLockOlder.value) return;
     if (wasNearBottom.value) {
       scrollToBottom();
     } else {
@@ -404,20 +405,21 @@ watch(
     const newKeys = items.map((i) => i.key).filter((k) => !visibleKeys.value.has(k));
     if (newKeys.length === 0) return;
 
-    if (isInitialLoad) {
-      // Initial chat load: add all keys immediately with no animation
+    if (isInitialLoad || newKeys.length > 1) {
+      // Initial chat load, chat switch, or bulk pagination update:
+      // show everything immediately with no animation delay.
       isInitialLoad = false;
       const updated = new Set(visibleKeys.value);
       newKeys.forEach((k) => updated.add(k));
       visibleKeys.value = updated;
     } else {
-      // New socket messages: use fade-in animation
+      // Single new message (realtime socket event): reveal on next frame for a smooth fade-in.
       await nextTick();
-      setTimeout(() => {
+      requestAnimationFrame(() => {
         const updated = new Set(visibleKeys.value);
         newKeys.forEach((k) => updated.add(k));
         visibleKeys.value = updated;
-      }, FADE_IN_DELAY_MS);
+      });
     }
   },
   { immediate: true }
