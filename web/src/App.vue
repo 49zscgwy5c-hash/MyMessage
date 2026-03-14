@@ -272,6 +272,8 @@ async function loadConversations() {
 
 async function loadMessages(conversationId: string) {
   const response = await api.get(`/conversations/${conversationId}/messages?limit=30`);
+  // Guard against stale responses when the active conversation changed while loading
+  if (activeConversationId.value !== conversationId) return;
   messages.value = response.data.messages;
   hasMoreOlder.value = !!response.data.hasMoreOlder;
   hasMoreNewer.value = false;
@@ -283,16 +285,20 @@ async function loadOlderMessages() {
     return;
   }
 
+  const conversationId = activeConversationId.value;
   loadingOlder.value = true;
 
   try {
     const oldest = messages.value[0];
-    const response = await api.get(`/conversations/${activeConversationId.value}/messages`, {
+    const response = await api.get(`/conversations/${conversationId}/messages`, {
       params: {
         limit: 40,
         before: oldest.createdAt,
       },
     });
+
+    // Guard against stale responses
+    if (activeConversationId.value !== conversationId) return;
 
     const older = response.data.messages || [];
     messages.value = [...older, ...messages.value];
@@ -305,12 +311,16 @@ async function loadOlderMessages() {
 async function loadNewerMessages() {
   if (!activeConversationId.value || loadingNewer.value || !hasMoreNewer.value || messages.value.length === 0) return;
 
+  const conversationId = activeConversationId.value;
   loadingNewer.value = true;
   try {
     const newest = messages.value[messages.value.length - 1];
-    const response = await api.get(`/conversations/${activeConversationId.value}/messages`, {
+    const response = await api.get(`/conversations/${conversationId}/messages`, {
       params: { limit: 40, after: newest.createdAt }
     });
+
+    // Guard against stale responses
+    if (activeConversationId.value !== conversationId) return;
 
     const newer = response.data.messages || [];
     messages.value = [...messages.value, ...newer];
@@ -344,7 +354,7 @@ async function handleReachLatest() {
   pendingNewMessagesCount.value = 0;
   await markConversationRead(activeConversationId.value);
   await loadConversations();
-  await refreshActiveConversationMessages();
+  // Messages are kept current via socket events; avoid unnecessary full reload here
 }
 
 async function handleJumpToLatest() {
@@ -382,6 +392,8 @@ function handlePinMessage(message: Message) {
 async function handleJumpToMessage(messageId: string) {
   if (!messageId || !activeConversationId.value) return;
 
+  const conversationId = activeConversationId.value;
+
   // Check if the message is already in the current list
   const existsInList = messages.value.some(m => m.id === messageId);
 
@@ -397,9 +409,12 @@ async function handleJumpToMessage(messageId: string) {
   // Message not in list — load context around it
   try {
     const response = await api.get(
-      `/conversations/${activeConversationId.value}/messages/around/${messageId}`,
+      `/conversations/${conversationId}/messages/around/${messageId}`,
       { params: { count: 30 } }
     );
+
+    // Guard against stale responses
+    if (activeConversationId.value !== conversationId) return;
 
     messages.value = response.data.messages || [];
     hasMoreOlder.value = !!response.data.hasMoreOlder;
@@ -542,9 +557,7 @@ async function sendMessage() {
 
       if (activeConversationId.value !== conversationId) return;
       await loadConversations();
-
-      if (activeConversationId.value !== conversationId) return;
-      await refreshActiveConversationMessages();
+      // The message:new socket event handles appending the sent message
     }
   );
 }
@@ -590,17 +603,29 @@ async function startApp() {
       const isMine = payload.message.username === currentUser.value?.username;
 
       if (isActiveChatMessage) {
-        await refreshActiveConversationMessages();
-
-        if (!isMine) {
-          if (isChatNearBottom.value) {
-            await markConversationRead(payload.message.conversationId);
-
-            if (payload.message.conversationId === activeConversationId.value) {
-              pendingNewMessagesCount.value = 0;
-            }
-          } else {
+        if (isJumpMode.value) {
+          // In jump mode, don't append — user is viewing a historical segment.
+          // Only track unread count for messages from others.
+          if (!isMine) {
             pendingNewMessagesCount.value += 1;
+          }
+        } else {
+          // Append the new message directly to avoid a full list reload
+          const alreadyExists = messages.value.some((m) => m.id === payload.message.id);
+          if (!alreadyExists) {
+            messages.value = [...messages.value, payload.message];
+          }
+
+          if (!isMine) {
+            if (isChatNearBottom.value) {
+              await markConversationRead(payload.message.conversationId);
+
+              if (payload.message.conversationId === activeConversationId.value) {
+                pendingNewMessagesCount.value = 0;
+              }
+            } else {
+              pendingNewMessagesCount.value += 1;
+            }
           }
         }
       }
