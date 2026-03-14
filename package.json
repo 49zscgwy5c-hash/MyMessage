@@ -1,0 +1,11 @@
+{
+  "name": "mymessage",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix web\"",
+    "start": "concurrently \"npm run start --prefix server\" \"npm run dev --prefix web\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
