@@ -52,6 +52,25 @@ type Participant = {
   joinedAt: string;
 };
 
+/**
+ * Snapshot of per-conversation message state stored in the in-memory cache.
+ * Jump-mode entries are intentionally not restored on revisit so that users
+ * always return to the latest messages rather than a stale historical position.
+ */
+type ConversationCache = {
+  messages: Message[];
+  hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
+  isJumpMode: boolean;
+  pinnedMessage: Message | null;
+};
+
+const MAX_CACHE_SIZE = 10;
+const conversationCache = new Map<string, ConversationCache>();
+// Per-conversation request token: incremented on each loadMessages call so only
+// the latest in-flight response is ever applied (stale-response protection).
+const conversationLoadTokens = new Map<string, number>();
+
 const savedToken = localStorage.getItem('token');
 const savedUser = localStorage.getItem('currentUser');
 
@@ -270,14 +289,52 @@ async function loadConversations() {
   conversations.value = response.data.conversations;
 }
 
+/**
+ * Persist the current message state for `conversationId` into the in-memory
+ * cache so it can be restored instantly the next time that conversation is
+ * opened.  Uses LRU-style eviction capped at MAX_CACHE_SIZE entries.
+ */
+function saveConversationToCache(conversationId: string) {
+  if (messages.value.length === 0) return;
+  // Re-insert to keep insertion-order LRU correct
+  conversationCache.delete(conversationId);
+  conversationCache.set(conversationId, {
+    messages: [...messages.value],
+    hasMoreOlder: hasMoreOlder.value,
+    hasMoreNewer: hasMoreNewer.value,
+    isJumpMode: isJumpMode.value,
+    pinnedMessage: pinnedMessage.value,
+  });
+  if (conversationCache.size > MAX_CACHE_SIZE) {
+    // Use a loop in case multiple entries were somehow added beyond the limit.
+    while (conversationCache.size > MAX_CACHE_SIZE) {
+      const oldest = conversationCache.keys().next().value;
+      if (oldest) conversationCache.delete(oldest);
+      else break;
+    }
+  }
+}
+
 async function loadMessages(conversationId: string) {
+  // Increment the per-conversation request token so any previous in-flight
+  // request for this same conversation is invalidated.
+  const requestToken = (conversationLoadTokens.get(conversationId) || 0) + 1;
+  conversationLoadTokens.set(conversationId, requestToken);
+
   const response = await api.get(`/conversations/${conversationId}/messages?limit=30`);
-  // Guard against stale responses when the active conversation changed while loading
+
+  // Guard: active conversation changed while loading
   if (activeConversationId.value !== conversationId) return;
+  // Guard: a newer loadMessages call for the same conversation superseded this one
+  if (conversationLoadTokens.get(conversationId) !== requestToken) return;
+
   messages.value = response.data.messages;
   hasMoreOlder.value = !!response.data.hasMoreOlder;
   hasMoreNewer.value = false;
   isJumpMode.value = false;
+
+  // Update cache with fresh data (preserve current pinnedMessage)
+  saveConversationToCache(conversationId);
 }
 
 async function loadOlderMessages() {
@@ -374,13 +431,6 @@ async function handleJumpToLatest() {
   await loadMessages(activeConversationId.value);
 }
 
-async function refreshActiveConversationMessages() {
-  if (!activeConversationId.value) return;
-  // In jump mode, don't reload all messages to preserve scroll position
-  if (isJumpMode.value) return;
-  await loadMessages(activeConversationId.value);
-}
-
 function handleReplyToMessage(message: Message) {
   replyToMessage.value = message;
 }
@@ -438,23 +488,41 @@ async function handleJumpToMessage(messageId: string) {
 async function openConversation(conversationId: string) {
   const previousConversationId = activeConversationId.value;
 
+  // Save departing conversation state to cache before clearing it.
+  if (previousConversationId && previousConversationId !== conversationId) {
+    saveConversationToCache(previousConversationId);
+  }
+
   activeConversationId.value = conversationId;
-  messages.value = [];
   loadingOlder.value = false;
-  hasMoreOlder.value = true;
-  hasMoreNewer.value = false;
   loadingNewer.value = false;
-  isJumpMode.value = false;
   typingText.value = '';
   pendingNewMessagesCount.value = 0;
   replyToMessage.value = null;
-  pinnedMessage.value = null;
+
+  // Restore cached state immediately for instant display, or start with empty slate.
+  // Jump-mode entries are not restored: the user should land at the latest messages.
+  const cached = conversationCache.get(conversationId);
+  if (cached && !cached.isJumpMode) {
+    messages.value = cached.messages;
+    hasMoreOlder.value = cached.hasMoreOlder;
+    hasMoreNewer.value = cached.hasMoreNewer;
+    isJumpMode.value = false;
+    pinnedMessage.value = cached.pinnedMessage;
+  } else {
+    messages.value = [];
+    hasMoreOlder.value = true;
+    hasMoreNewer.value = false;
+    isJumpMode.value = false;
+    pinnedMessage.value = null;
+  }
 
   const socket = getSocket();
   if (socket && previousConversationId && previousConversationId !== conversationId) {
     socket.emit('conversation:leave', { conversationId: previousConversationId });
   }
 
+  // Always fetch fresh messages (background refresh when cache was shown).
   await loadMessages(conversationId);
   if (activeConversationId.value !== conversationId) return;
 
@@ -687,6 +755,8 @@ function logout() {
   isChatInfoModalOpen.value = false;
   isCreateGroupModalOpen.value = false;
   isCreateChannelModalOpen.value = false;
+  conversationCache.clear();
+  conversationLoadTokens.clear();
 }
 
 if (token.value) {
