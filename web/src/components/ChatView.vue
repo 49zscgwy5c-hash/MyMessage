@@ -92,7 +92,10 @@ let highlightTimer: number | null = null;
 
 const visibleKeys = ref<Set<string>>(new Set());
 const FADE_IN_DELAY_MS = 30;
-let isInitialLoad = true;
+// Tracks the conversation ID for which the next batch of messages is the
+// "initial render" (should appear immediately, with no fade-in animation).
+// Reset to null once the first batch has been processed for that conversation.
+let conversationIdForInitialLoad: string | null = null;
 
 function label(conversation: Conversation | null) {
   if (!conversation) return 'Выберите чат';
@@ -367,7 +370,7 @@ watch(
   () => props.activeConversation?.id,
   async () => {
     visibleKeys.value = new Set();
-    isInitialLoad = true;
+    conversationIdForInitialLoad = props.activeConversation?.id ?? null;
     hideContextMenu();
     await nextTick();
     scrollToBottom();
@@ -404,9 +407,14 @@ watch(
     const newKeys = items.map((i) => i.key).filter((k) => !visibleKeys.value.has(k));
     if (newKeys.length === 0) return;
 
-    if (isInitialLoad) {
-      // Initial chat load: add all keys immediately with no animation
-      isInitialLoad = false;
+    const currentId = props.activeConversation?.id ?? null;
+    const isInitialRender =
+      conversationIdForInitialLoad !== null && conversationIdForInitialLoad === currentId;
+
+    if (isInitialRender) {
+      // Initial chat load after switching: add all keys immediately with no animation.
+      // Clear the marker so subsequent messages (socket) get fade-in.
+      conversationIdForInitialLoad = null;
       const updated = new Set(visibleKeys.value);
       newKeys.forEach((k) => updated.add(k));
       visibleKeys.value = updated;
