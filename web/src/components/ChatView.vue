@@ -74,6 +74,8 @@ const messagesEl = ref<HTMLElement | null>(null);
 const wasNearBottom = ref(true);
 const scrollLockOlder = ref(false);
 const scrollLockNewer = ref(false);
+const savedScrollHeight = ref(0);
+const savedScrollTop = ref(0);
 
 const contextMenu = ref<{
   visible: boolean;
@@ -184,7 +186,7 @@ function scrollToBottom() {
   notifyBottomState();
 }
 
-async function onScroll() {
+function onScroll() {
   const el = messagesEl.value;
   if (!el) return;
 
@@ -193,20 +195,9 @@ async function onScroll() {
   // Load older messages (scroll up)
   if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder && !scrollLockOlder.value) {
     scrollLockOlder.value = true;
-    const prevScrollHeight = el.scrollHeight;
-    const prevScrollTop = el.scrollTop;
+    savedScrollHeight.value = el.scrollHeight;
+    savedScrollTop.value = el.scrollTop;
     emit('loadOlder');
-
-    await nextTick();
-
-    requestAnimationFrame(() => {
-      if (!messagesEl.value) return;
-      const newScrollHeight = messagesEl.value.scrollHeight;
-      const diff = newScrollHeight - prevScrollHeight;
-      messagesEl.value.scrollTop = prevScrollTop + diff;
-      notifyBottomState();
-      scrollLockOlder.value = false;
-    });
   }
 
   // Load newer messages (scroll down) — only in jump mode
@@ -219,11 +210,6 @@ async function onScroll() {
   ) {
     scrollLockNewer.value = true;
     emit('loadNewer');
-
-    await nextTick();
-    requestAnimationFrame(() => {
-      scrollLockNewer.value = false;
-    });
   }
 }
 
@@ -423,6 +409,41 @@ watch(
     }
   },
   { immediate: true }
+);
+
+// Restore scroll position after older messages have been prepended to the list.
+// The lock is set in onScroll before emitting loadOlder; we release it here once
+// the async fetch is done (loadingOlder transitions true → false).
+watch(
+  () => props.loadingOlder,
+  async (loading, wasLoading) => {
+    if (!loading && wasLoading) {
+      if (savedScrollHeight.value > 0) {
+        await nextTick();
+        requestAnimationFrame(() => {
+          if (!messagesEl.value) return;
+          const diff = messagesEl.value.scrollHeight - savedScrollHeight.value;
+          messagesEl.value.scrollTop = savedScrollTop.value + diff;
+          savedScrollHeight.value = 0;
+          savedScrollTop.value = 0;
+          scrollLockOlder.value = false;
+          notifyBottomState();
+        });
+      } else {
+        scrollLockOlder.value = false;
+      }
+    }
+  }
+);
+
+// Release newer-message scroll lock once the fetch completes.
+watch(
+  () => props.loadingNewer,
+  (loading, wasLoading) => {
+    if (!loading && wasLoading) {
+      scrollLockNewer.value = false;
+    }
+  }
 );
 
 function handleGlobalContextMenu(event: MouseEvent) {

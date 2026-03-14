@@ -301,7 +301,9 @@ async function loadOlderMessages() {
     if (activeConversationId.value !== conversationId) return;
 
     const older = response.data.messages || [];
-    messages.value = [...older, ...messages.value];
+    const existingIds = new Set(messages.value.map((m) => m.id));
+    const uniqueOlder = older.filter((m: Message) => !existingIds.has(m.id));
+    messages.value = [...uniqueOlder, ...messages.value];
     hasMoreOlder.value = !!response.data.hasMoreOlder;
   } finally {
     loadingOlder.value = false;
@@ -323,7 +325,9 @@ async function loadNewerMessages() {
     if (activeConversationId.value !== conversationId) return;
 
     const newer = response.data.messages || [];
-    messages.value = [...messages.value, ...newer];
+    const existingIds = new Set(messages.value.map((m) => m.id));
+    const uniqueNewer = newer.filter((m: Message) => !existingIds.has(m.id));
+    messages.value = [...messages.value, ...uniqueNewer];
     hasMoreNewer.value = !!response.data.hasMoreNewer;
 
     if (!hasMoreNewer.value) {
@@ -633,12 +637,8 @@ async function startApp() {
       await loadConversations();
     });
 
-    socket.on('conversation:updated', async (payload: { conversationId?: string }) => {
+    socket.on('conversation:updated', async () => {
       await loadConversations();
-
-      if (payload?.conversationId && payload.conversationId === activeConversationId.value) {
-        await refreshActiveConversationMessages();
-      }
     });
 
     if (conversations.value.length > 0) {
