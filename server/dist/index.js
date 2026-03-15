@@ -197,7 +197,16 @@ io.on('connection', (socket) => {
             const allowed = await (0, conversations_2.ensureUserInConversation)(user.userId, conversationId);
             if (!allowed)
                 return;
-            const readAt = new Date().toISOString();
+            await (0, conversations_2.markConversationAsRead)(conversationId, user.userId);
+            const [rows] = await mysql_1.pool.query(`
+        SELECT created_at
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        `, [conversationId]);
+            const latestRows = rows;
+            const readAt = latestRows[0]?.created_at || new Date().toISOString();
             const participants = await (0, conversations_2.getConversationParticipants)(conversationId);
             for (const p of participants) {
                 if (p.userId !== user.userId) {
@@ -207,6 +216,44 @@ io.on('connection', (socket) => {
         }
         catch (error) {
             console.error('conversation:read error', error);
+        }
+    });
+    socket.on('message:deleted', async (payload) => {
+        try {
+            const conversationId = String(payload?.conversationId || '');
+            const mode = payload?.mode === 'everyone' ? 'everyone' : 'self';
+            const messageIds = Array.isArray(payload?.messageIds)
+                ? payload.messageIds.map((id) => String(id || '')).filter(Boolean)
+                : [];
+            if (!conversationId || messageIds.length === 0)
+                return;
+            const allowed = await (0, conversations_2.ensureUserInConversation)(user.userId, conversationId);
+            if (!allowed)
+                return;
+            if (mode === 'everyone') {
+                io.to(`conversation:${conversationId}`).emit('message:deleted', {
+                    conversationId,
+                    messageIds,
+                    mode,
+                    actorUserId: user.userId,
+                });
+                const participants = await (0, conversations_2.getConversationParticipants)(conversationId);
+                for (const p of participants) {
+                    io.to(`user:${p.userId}`).emit('conversation:updated', { conversationId });
+                }
+            }
+            else {
+                io.to(`user:${user.userId}`).emit('message:deleted', {
+                    conversationId,
+                    messageIds,
+                    mode,
+                    actorUserId: user.userId,
+                });
+                io.to(`user:${user.userId}`).emit('conversation:updated', { conversationId });
+            }
+        }
+        catch (error) {
+            console.error('message:deleted error', error);
         }
     });
     socket.on('disconnect', () => {
