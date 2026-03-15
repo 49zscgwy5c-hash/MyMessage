@@ -56,6 +56,8 @@ const props = defineProps<{
   replyToMessage: Message | null;
   pinnedMessage: Message | null;
   scrollRevision: number;
+  selectedMessageIds: string[];
+  isSelectionMode: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -73,6 +75,11 @@ const emit = defineEmits<{
   jumpToMessage: [messageId: string];
   deleteForSelf: [message: Message];
   deleteForEveryone: [message: Message];
+  enterSelectionMode: [message: Message];
+  toggleMessageSelection: [messageId: string];
+  deleteSelectedForSelf: [];
+  deleteSelectedForEveryone: [];
+  clearSelection: [];
 }>();
 
 const messagesEl = ref<HTMLElement | null>(null);
@@ -279,6 +286,29 @@ function handleDeleteForSelf(message: Message) {
 function handleDeleteForEveryone(message: Message) {
   emit('deleteForEveryone', message);
   hideContextMenu();
+}
+
+function handleEnterSelectionMode(message: Message) {
+  emit('enterSelectionMode', message);
+  hideContextMenu();
+}
+
+function isSelected(messageId: string) {
+  return props.selectedMessageIds.includes(messageId);
+}
+
+function canDeleteSelectedForEveryone() {
+  if (props.selectedMessageIds.length === 0) return false;
+
+  return props.selectedMessageIds.every((id) => {
+    const message = props.messages.find((m) => m.id === id);
+    return !!message && message.username === props.currentUsername && !message.deletedForEveryoneAt;
+  });
+}
+
+function handleMessageClick(message: Message) {
+  if (!props.isSelectionMode) return;
+  emit('toggleMessageSelection', message.id);
 }
 
 function flashMessage(messageId: string) {
@@ -540,6 +570,12 @@ watch(
 
 function handleGlobalContextMenu(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
+  if (props.isSelectionMode) {
+    event.preventDefault();
+    hideContextMenu();
+    return;
+  }
+
   if (!target?.closest('.tm-message-shell')) {
     hideContextMenu();
   }
@@ -656,8 +692,11 @@ onBeforeUnmount(() => {
               item.groupedBottom ? 'grouped-bottom' : '',
               highlightedMessageId === item.message.id ? 'is-highlighted' : '',
               visibleKeys.has(item.key) ? 'is-visible' : '',
+              props.isSelectionMode && isSelected(item.message.id) ? 'is-selected' : '',
+              props.isSelectionMode ? 'is-selection-mode' : '',
             ]"
-            @contextmenu.prevent.stop="openContextMenu($event, item.message)"
+            @contextmenu.prevent.stop="!props.isSelectionMode && openContextMenu($event, item.message)"
+            @click="handleMessageClick(item.message)"
           >
             <div
               v-if="!item.mine"
@@ -821,6 +860,47 @@ onBeforeUnmount(() => {
       >
         🚫 Удалить у всех
       </button>
+      <button
+        class="tm-context-menu__item"
+        @click="handleEnterSelectionMode(contextMenu.message)"
+      >
+        ✅ Выбрать
+      </button>
+    </div>
+
+    <div
+      v-if="props.isSelectionMode"
+      class="tm-selection-bar"
+    >
+      <div class="tm-selection-bar__count">
+        Выбрано: {{ props.selectedMessageIds.length }}
+      </div>
+
+      <div class="tm-selection-bar__actions">
+        <button
+          class="tm-selection-bar__btn"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('deleteSelectedForSelf')"
+        >
+          🗑 Удалить у себя
+        </button>
+
+        <button
+          v-if="canDeleteSelectedForEveryone()"
+          class="tm-selection-bar__btn danger"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('deleteSelectedForEveryone')"
+        >
+          🚫 Удалить у всех
+        </button>
+
+        <button
+          class="tm-selection-bar__btn secondary"
+          @click="emit('clearSelection')"
+        >
+          Отмена
+        </button>
+      </div>
     </div>
   </main>
 </template>

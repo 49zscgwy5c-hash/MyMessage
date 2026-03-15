@@ -119,6 +119,8 @@ const firstUnreadMessageId = ref<string | null>(null);
 
 const replyToMessage = ref<Message | null>(null);
 const pinnedMessage = ref<Message | null>(null);
+const selectedMessageIds = ref<string[]>([]);
+const isSelectionMode = ref(false);
 // Incremented each time the sender's own message arrives via socket so that
 // ChatView can watch this value and deterministically scroll to the new message
 // regardless of whether wasNearBottom was true or false.
@@ -550,6 +552,11 @@ async function deleteMessages(messageIds: string[], mode: 'self' | 'everyone') {
         : null;
   }
 
+  selectedMessageIds.value = selectedMessageIds.value.filter((id) => !messageIds.includes(id));
+  if (selectedMessageIds.value.length === 0) {
+    isSelectionMode.value = false;
+  }
+
   await loadConversations();
 }
 
@@ -559,6 +566,48 @@ async function handleDeleteForSelf(message: Message) {
 
 async function handleDeleteForEveryone(message: Message) {
   await deleteMessages([message.id], 'everyone');
+}
+
+function enterSelectionMode(message: Message) {
+  isSelectionMode.value = true;
+  selectedMessageIds.value = [message.id];
+}
+
+function toggleMessageSelection(messageId: string) {
+  if (!messageId) return;
+
+  if (!isSelectionMode.value) {
+    isSelectionMode.value = true;
+    selectedMessageIds.value = [messageId];
+    return;
+  }
+
+  if (selectedMessageIds.value.includes(messageId)) {
+    selectedMessageIds.value = selectedMessageIds.value.filter((id) => id !== messageId);
+  } else {
+    selectedMessageIds.value = [...selectedMessageIds.value, messageId];
+  }
+
+  if (selectedMessageIds.value.length === 0) {
+    isSelectionMode.value = false;
+  }
+}
+
+function clearSelection() {
+  selectedMessageIds.value = [];
+  isSelectionMode.value = false;
+}
+
+async function deleteSelectedForSelf() {
+  if (selectedMessageIds.value.length === 0) return;
+  await deleteMessages(selectedMessageIds.value, 'self');
+  clearSelection();
+}
+
+async function deleteSelectedForEveryone() {
+  if (selectedMessageIds.value.length === 0) return;
+  await deleteMessages(selectedMessageIds.value, 'everyone');
+  clearSelection();
 }
 
 async function handleJumpToMessage(messageId: string) {
@@ -1099,6 +1148,8 @@ if (token.value) {
           :reply-to-message="replyToMessage"
           :pinned-message="pinnedMessage"
           :scroll-revision="scrollRevision"
+          :selected-message-ids="selectedMessageIds"
+          :is-selection-mode="isSelectionMode"
           @open-info="isChatInfoModalOpen = true"
           @update-text="text = $event"
           @send="sendMessage"
@@ -1113,6 +1164,11 @@ if (token.value) {
           @jump-to-message="handleJumpToMessage"
           @delete-for-self="handleDeleteForSelf"
           @delete-for-everyone="handleDeleteForEveryone"
+          @enter-selection-mode="enterSelectionMode"
+          @toggle-message-selection="toggleMessageSelection"
+          @delete-selected-for-self="deleteSelectedForSelf"
+          @delete-selected-for-everyone="deleteSelectedForEveryone"
+          @clear-selection="clearSelection"
         />
       </div>
 
