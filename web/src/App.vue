@@ -10,6 +10,7 @@ import ChatView from './components/ChatView.vue';
 import CreateGroupModal from './components/CreateGroupModal.vue';
 import CreateChannelModal from './components/CreateChannelModal.vue';
 import ChatInfoModal from './components/ChatInfoModal.vue';
+import ForwardMessagesModal from './components/ForwardMessagesModal.vue';
 
 type User = {
   id: string;
@@ -135,10 +136,12 @@ const isMenuOpen = ref(false);
 const isChatInfoModalOpen = ref(false);
 const isCreateGroupModalOpen = ref(false);
 const isCreateChannelModalOpen = ref(false);
+const isForwardModalOpen = ref(false);
 
 const groupTitle = ref('');
 const selectedGroupUserIds = ref<string[]>([]);
 const channelTitle = ref('');
+const forwardSearchQuery = ref('');
 
 const activeConversation = computed(() =>
   conversations.value.find((item) => item.id === activeConversationId.value) || null
@@ -153,6 +156,19 @@ const filteredConversations = computed(() => {
     const preview = (conversation.lastMessageText || '').toLowerCase();
     return title.includes(q) || preview.includes(q);
   });
+});
+
+const forwardTargetConversations = computed(() => {
+  const q = forwardSearchQuery.value.trim().toLowerCase();
+
+  return conversations.value
+    .filter((conversation) => conversation.id !== activeConversationId.value)
+    .filter((conversation) => {
+      if (!q) return true;
+      const title = (conversation.title || conversation.type || '').toLowerCase();
+      const preview = (conversation.lastMessageText || '').toLowerCase();
+      return title.includes(q) || preview.includes(q);
+    });
 });
 
 const myParticipant = computed(() =>
@@ -213,6 +229,12 @@ function closeTopOverlay() {
 
   if (isCreateChannelModalOpen.value) {
     isCreateChannelModalOpen.value = false;
+    return;
+  }
+
+  if (isForwardModalOpen.value) {
+    isForwardModalOpen.value = false;
+    forwardSearchQuery.value = '';
     return;
   }
 
@@ -832,6 +854,34 @@ async function createChannel() {
   }
 }
 
+
+async function forwardSelectedMessages() {
+  if (!activeConversationId.value || selectedMessageIds.value.length === 0) return;
+
+  errorText.value = '';
+  forwardSearchQuery.value = '';
+  isForwardModalOpen.value = true;
+}
+
+async function submitForwardSelectedMessages(targetConversationId: string) {
+  if (!activeConversationId.value || selectedMessageIds.value.length === 0) return;
+  if (!targetConversationId) return;
+
+  try {
+    await api.post(`/conversations/${activeConversationId.value}/messages/forward`, {
+      targetConversationId,
+      messageIds: selectedMessageIds.value,
+    });
+
+    clearSelection();
+    isForwardModalOpen.value = false;
+    forwardSearchQuery.value = '';
+    await loadConversations();
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Не удалось переслать сообщения';
+  }
+}
+
 async function sendMessage() {
   if (!text.value.trim() || !activeConversationId.value) return;
 
@@ -1080,6 +1130,8 @@ function logout() {
   isChatInfoModalOpen.value = false;
   isCreateGroupModalOpen.value = false;
   isCreateChannelModalOpen.value = false;
+  isForwardModalOpen.value = false;
+  forwardSearchQuery.value = '';
   conversationCache.clear();
   conversationLoadTokens.clear();
   conversationContextTokens.clear();
@@ -1199,11 +1251,12 @@ if (token.value) {
           @clear-selection="clearSelection"
           @select-visible-messages="selectVisibleMessages"
           @copy-selected-messages="copySelectedMessages"
+          @forward-selected-messages="forwardSelectedMessages"
         />
       </div>
 
       <div
-        v-if="isMenuOpen || isChatInfoModalOpen || isCreateGroupModalOpen || isCreateChannelModalOpen"
+        v-if="isMenuOpen || isChatInfoModalOpen || isCreateGroupModalOpen || isCreateChannelModalOpen || isForwardModalOpen"
         class="tm-overlay"
         @click="closeTopOverlay"
       />
@@ -1241,6 +1294,15 @@ if (token.value) {
         :active-conversation="activeConversation"
         :participants="participants"
         @close="isChatInfoModalOpen = false"
+      />
+
+      <ForwardMessagesModal
+        v-if="isForwardModalOpen"
+        :conversations="forwardTargetConversations"
+        :search-query="forwardSearchQuery"
+        @close="isForwardModalOpen = false; forwardSearchQuery = ''"
+        @update-search-query="forwardSearchQuery = $event"
+        @submit="submitForwardSelectedMessages"
       />
     </template>
   </div>
