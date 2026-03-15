@@ -196,10 +196,12 @@ function onScroll() {
   // Guard props.messages.length > 0: if the list is empty the lock would get
   // stuck because loadOlderMessages returns early without ever setting
   // loadingOlder = true, so the watcher that resets the lock never fires.
+  // Note: savedScrollHeight/savedScrollTop are captured in the loadingOlder
+  // watcher (when loading becomes true) so that the snapshot reflects the DOM
+  // state AFTER the loading indicator has been rendered, giving a more accurate
+  // scroll-position restoration and avoiding scroll jerk.
   if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder && !scrollLockOlder.value && props.messages.length > 0) {
     scrollLockOlder.value = true;
-    savedScrollHeight.value = el.scrollHeight;
-    savedScrollTop.value = el.scrollTop;
     emit('loadOlder');
   }
 
@@ -421,13 +423,30 @@ watch(
   { immediate: true }
 );
 
-// Restore scroll position after older messages have been prepended to the list.
-// The lock is set in onScroll before emitting loadOlder; we release it here once
-// the async fetch is done (loadingOlder transitions true → false).
+// Manage scroll-position preservation around older-message prepend.
+//
+// When loadingOlder transitions false → true we snapshot the scroll state
+// AFTER the loading indicator has been rendered into the DOM (via nextTick).
+// This gives a more accurate baseline than capturing in the scroll handler
+// (where the loading indicator has not yet appeared) and eliminates the
+// small height discrepancy that was causing visible scroll jerk.
+//
+// When loadingOlder transitions true → false we restore the scroll position
+// using the snapshot, then release the scroll lock.
 watch(
   () => props.loadingOlder,
   async (loading, wasLoading) => {
-    if (!loading && wasLoading) {
+    if (loading && !wasLoading) {
+      // Loading just started — wait for Vue to render the loading indicator,
+      // then snapshot the scroll state so the restoration calculation is based
+      // on the stable DOM that includes that indicator.
+      await nextTick();
+      const el = messagesEl.value;
+      if (el) {
+        savedScrollHeight.value = el.scrollHeight;
+        savedScrollTop.value = el.scrollTop;
+      }
+    } else if (!loading && wasLoading) {
       if (savedScrollHeight.value > 0) {
         await nextTick();
         // Correct scroll position synchronously right after Vue's DOM update,

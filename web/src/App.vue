@@ -70,6 +70,12 @@ const conversationCache = new Map<string, ConversationCache>();
 // Per-conversation request token: incremented on each loadMessages call so only
 // the latest in-flight response is ever applied (stale-response protection).
 const conversationLoadTokens = new Map<string, number>();
+// Per-conversation context token: incremented on each openConversation call so
+// that any in-flight loadOlderMessages / loadNewerMessages result that was
+// started in a previous "session" of the same conversation (i.e. the user
+// switched away and switched back) is discarded rather than applied to the
+// freshly-opened timeline.
+const conversationContextTokens = new Map<string, number>();
 
 const savedToken = localStorage.getItem('token');
 const savedUser = localStorage.getItem('currentUser');
@@ -343,6 +349,9 @@ async function loadOlderMessages() {
   }
 
   const conversationId = activeConversationId.value;
+  // Capture the current context token so we can detect if the user switched
+  // away and then back to this conversation while the fetch was in-flight.
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
   loadingOlder.value = true;
 
   try {
@@ -354,8 +363,10 @@ async function loadOlderMessages() {
       },
     });
 
-    // Guard against stale responses
+    // Guard against stale responses: conversation changed OR this conversation
+    // was re-opened (context token bumped) while the fetch was in-flight.
     if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
 
     const older = response.data.messages || [];
     const existingIds = new Set(messages.value.map((m) => m.id));
@@ -371,6 +382,8 @@ async function loadNewerMessages() {
   if (!activeConversationId.value || loadingNewer.value || !hasMoreNewer.value || messages.value.length === 0) return;
 
   const conversationId = activeConversationId.value;
+  // Capture context token to guard against switch-away/switch-back races.
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
   loadingNewer.value = true;
   try {
     const newest = messages.value[messages.value.length - 1];
@@ -380,6 +393,7 @@ async function loadNewerMessages() {
 
     // Guard against stale responses
     if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
 
     const newer = response.data.messages || [];
     const existingIds = new Set(messages.value.map((m) => m.id));
@@ -447,6 +461,7 @@ async function handleJumpToMessage(messageId: string) {
   if (!messageId || !activeConversationId.value) return;
 
   const conversationId = activeConversationId.value;
+  const contextToken = conversationContextTokens.get(conversationId) || 0;
 
   // Check if the message is already in the current list
   const existsInList = messages.value.some(m => m.id === messageId);
@@ -469,6 +484,7 @@ async function handleJumpToMessage(messageId: string) {
 
     // Guard against stale responses
     if (activeConversationId.value !== conversationId) return;
+    if ((conversationContextTokens.get(conversationId) || 0) !== contextToken) return;
 
     messages.value = response.data.messages || [];
     hasMoreOlder.value = !!response.data.hasMoreOlder;
@@ -492,6 +508,12 @@ async function openConversation(conversationId: string) {
   if (previousConversationId && previousConversationId !== conversationId) {
     saveConversationToCache(previousConversationId);
   }
+
+  // Bump the context token for this conversation so any in-flight
+  // loadOlderMessages / loadNewerMessages requests from a previous visit
+  // are invalidated and will not overwrite the fresh timeline state.
+  const newContextToken = (conversationContextTokens.get(conversationId) || 0) + 1;
+  conversationContextTokens.set(conversationId, newContextToken);
 
   activeConversationId.value = conversationId;
   loadingOlder.value = false;
@@ -757,6 +779,7 @@ function logout() {
   isCreateChannelModalOpen.value = false;
   conversationCache.clear();
   conversationLoadTokens.clear();
+  conversationContextTokens.clear();
 }
 
 if (token.value) {
