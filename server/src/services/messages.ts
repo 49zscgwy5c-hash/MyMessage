@@ -18,6 +18,7 @@ export type ChatMessage = {
   createdAt: string;
   isRead?: boolean;
   replyTo: MessageReplySnippet | null;
+  deletedForEveryoneAt?: string | null;
 };
 
 type MessageRow = {
@@ -27,6 +28,7 @@ type MessageRow = {
   username: string;
   text: string;
   createdAt: string;
+  deletedForEveryoneAt: string | null;
   replyToId: string | null;
   replyToUserId: string | null;
   replyToUsername: string | null;
@@ -35,22 +37,26 @@ type MessageRow = {
 };
 
 function mapMessageRow(row: MessageRow): ChatMessage {
+  const isDeletedForEveryone = !!row.deletedForEveryoneAt;
+
   return {
     id: row.id,
     conversationId: row.conversationId,
     userId: row.userId,
     username: row.username,
-    text: row.text,
+    text: isDeletedForEveryone ? 'Сообщение удалено' : row.text,
     createdAt: row.createdAt,
-    replyTo: row.replyToId
-      ? {
-          id: row.replyToId,
-          userId: row.replyToUserId || '',
-          username: row.replyToUsername || 'Unknown',
-          text: row.replyToText || '',
-          createdAt: row.replyToCreatedAt || row.createdAt,
-        }
-      : null,
+    deletedForEveryoneAt: row.deletedForEveryoneAt,
+    replyTo:
+      isDeletedForEveryone || !row.replyToId
+        ? null
+        : {
+            id: row.replyToId,
+            userId: row.replyToUserId || '',
+            username: row.replyToUsername || 'Unknown',
+            text: row.replyToText || '',
+            createdAt: row.replyToCreatedAt || row.createdAt,
+          },
   };
 }
 
@@ -98,6 +104,7 @@ export async function createMessage(
       u.username AS username,
       m.text,
       m.created_at AS createdAt,
+      m.deleted_for_everyone_at AS deletedForEveryoneAt,
       rm.id AS replyToId,
       rm.user_id AS replyToUserId,
       ru.username AS replyToUsername,
@@ -148,6 +155,7 @@ export async function getMessagesByConversation(
       u.username AS username,
       m.text,
       m.created_at AS createdAt,
+      m.deleted_for_everyone_at AS deletedForEveryoneAt,
       rm.id AS replyToId,
       rm.user_id AS replyToUserId,
       ru.username AS replyToUsername,
@@ -158,9 +166,15 @@ export async function getMessagesByConversation(
     LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
     LEFT JOIN users ru ON ru.id = rm.user_id
     WHERE m.conversation_id = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM message_hidden_for_users mhfu
+        WHERE mhfu.message_id = m.id
+          AND mhfu.user_id = ?
+      )
   `;
 
-  const params: Array<string | number> = [conversationId];
+  const params: Array<string | number> = [conversationId, currentUserId];
   let hasMoreOlder = false;
   let hasMoreNewer = false;
   let messages: ChatMessage[];
@@ -246,6 +260,7 @@ export async function getMessagesAroundId(
       u.username AS username,
       m.text,
       m.created_at AS createdAt,
+      m.deleted_for_everyone_at AS deletedForEveryoneAt,
       rm.id AS replyToId,
       rm.user_id AS replyToUserId,
       ru.username AS replyToUsername,
@@ -342,3 +357,70 @@ export async function getMessagesAroundId(
 
   return { messages: messagesWithRead, hasMoreOlder, hasMoreNewer };
 }
+
+export async function deleteMessages(
+  conversationId: string,
+  currentUserId: string,
+  messageIds: string[],
+  mode: 'self' | 'everyone'
+): Promise<{ deletedMessageIds: string[]; mode: 'self' | 'everyone' }> {
+  const uniqueIds = Array.from(new Set(messageIds.filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    return { deletedMessageIds: [], mode };
+  }
+
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+
+  const [rows] = await pool.query(
+    `
+    SELECT id, user_id AS userId
+    FROM messages
+    WHERE conversation_id = ?
+      AND id IN (${placeholders})
+    `,
+    [conversationId, ...uniqueIds]
+  );
+
+  const messages = rows as Array<{ id: string; userId: string }>;
+  if (messages.length === 0) {
+    return { deletedMessageIds: [], mode };
+  }
+
+  const foundIds = new Set(messages.map((m) => m.id));
+  const existingIds = uniqueIds.filter((id) => foundIds.has(id));
+
+  if (mode === 'everyone') {
+    const hasForeignMessage = messages.some((message) => message.userId !== currentUserId);
+    if (hasForeignMessage) {
+      throw new Error('FORBIDDEN_DELETE_FOR_EVERYONE');
+    }
+
+    const updatePlaceholders = existingIds.map(() => '?').join(', ');
+    await pool.query(
+      `
+      UPDATE messages
+      SET deleted_for_everyone_at = NOW(),
+          deleted_for_everyone_by_user_id = ?
+      WHERE conversation_id = ?
+        AND id IN (${updatePlaceholders})
+      `,
+      [currentUserId, conversationId, ...existingIds]
+    );
+
+    return { deletedMessageIds: existingIds, mode };
+  }
+
+  const insertValues = existingIds.map(() => '(?, ?)').join(', ');
+  const insertParams = existingIds.flatMap((messageId) => [messageId, currentUserId]);
+
+  await pool.query(
+    `
+    INSERT IGNORE INTO message_hidden_for_users (message_id, user_id)
+    VALUES ${insertValues}
+    `,
+    insertParams
+  );
+
+  return { deletedMessageIds: existingIds, mode };
+}
+

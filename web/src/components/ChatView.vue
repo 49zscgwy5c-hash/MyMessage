@@ -24,6 +24,7 @@ type Message = {
   createdAt: string;
   isRead?: boolean;
   replyTo: MessageReply | null;
+  deletedForEveryoneAt?: string | null;
 };
 
 type TimelineItem =
@@ -70,6 +71,8 @@ const emit = defineEmits<{
   clearReply: [];
   pinMessage: [message: Message];
   jumpToMessage: [messageId: string];
+  deleteForSelf: [message: Message];
+  deleteForEveryone: [message: Message];
 }>();
 
 const messagesEl = ref<HTMLElement | null>(null);
@@ -257,6 +260,24 @@ function handleReply(message: Message) {
 
 function handlePin(message: Message) {
   emit('pinMessage', message);
+  hideContextMenu();
+}
+
+function canDeleteForEveryone(message: Message) {
+  return message.username === props.currentUsername && !message.deletedForEveryoneAt;
+}
+
+function canDeleteForSelf(message: Message) {
+  return !message.deletedForEveryoneAt;
+}
+
+function handleDeleteForSelf(message: Message) {
+  emit('deleteForSelf', message);
+  hideContextMenu();
+}
+
+function handleDeleteForEveryone(message: Message) {
+  emit('deleteForEveryone', message);
   hideContextMenu();
 }
 
@@ -766,10 +787,36 @@ onBeforeUnmount(() => {
       @click.stop
       @contextmenu.stop
     >
-      <button class="tm-context-menu__item" @click="handleReply(contextMenu.message)">↩ Ответить</button>
-      <button class="tm-context-menu__item" @click="handlePin(contextMenu.message)">📌 Закрепить</button>
+      <button
+        v-if="!contextMenu.message.deletedForEveryoneAt"
+        class="tm-context-menu__item"
+        @click="handleReply(contextMenu.message)"
+      >
+        ↩ Ответить
+      </button>
+      <button
+        v-if="!contextMenu.message.deletedForEveryoneAt"
+        class="tm-context-menu__item"
+        @click="handlePin(contextMenu.message)"
+      >
+        📌 Закрепить
+      </button>
       <button class="tm-context-menu__item" @click="handleJumpToMessage(contextMenu.message.id)">
         🎯 Перейти к сообщению
+      </button>
+      <button
+        v-if="canDeleteForSelf(contextMenu.message)"
+        class="tm-context-menu__item"
+        @click="handleDeleteForSelf(contextMenu.message)"
+      >
+        🗑 Удалить у себя
+      </button>
+      <button
+        v-if="canDeleteForEveryone(contextMenu.message)"
+        class="tm-context-menu__item"
+        @click="handleDeleteForEveryone(contextMenu.message)"
+      >
+        🚫 Удалить у всех
       </button>
     </div>
   </main>

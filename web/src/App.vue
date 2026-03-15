@@ -43,6 +43,7 @@ type Message = {
   createdAt: string;
   isRead?: boolean;
   replyTo: MessageReply | null;
+  deletedForEveryoneAt?: string | null;
 };
 
 type Participant = {
@@ -504,6 +505,62 @@ function handlePinMessage(message: Message) {
   pinnedMessage.value = message;
 }
 
+async function deleteMessages(messageIds: string[], mode: 'self' | 'everyone') {
+  if (!activeConversationId.value || messageIds.length === 0) return;
+
+  const conversationId = activeConversationId.value;
+
+  await api.post(`/conversations/${conversationId}/messages/delete`, {
+    messageIds,
+    mode,
+  });
+
+  const socket = getSocket();
+  if (socket) {
+    socket.emit('message:deleted', {
+      conversationId,
+      messageIds,
+      mode,
+    });
+  }
+
+  if (mode === 'self') {
+    messages.value = messages.value.filter((message) => !messageIds.includes(message.id));
+  } else {
+    messages.value = messages.value.map((message) => {
+      if (!messageIds.includes(message.id)) return message;
+      return {
+        ...message,
+        text: 'Сообщение удалено',
+        replyTo: null,
+        deletedForEveryoneAt: new Date().toISOString(),
+      };
+    });
+  }
+
+  if (pinnedMessage.value && messageIds.includes(pinnedMessage.value.id)) {
+    pinnedMessage.value =
+      mode === 'everyone'
+        ? {
+            ...pinnedMessage.value,
+            text: 'Сообщение удалено',
+            replyTo: null,
+            deletedForEveryoneAt: new Date().toISOString(),
+          }
+        : null;
+  }
+
+  await loadConversations();
+}
+
+async function handleDeleteForSelf(message: Message) {
+  await deleteMessages([message.id], 'self');
+}
+
+async function handleDeleteForEveryone(message: Message) {
+  await deleteMessages([message.id], 'everyone');
+}
+
 async function handleJumpToMessage(messageId: string) {
   if (!messageId || !activeConversationId.value) return;
 
@@ -759,6 +816,7 @@ async function startApp() {
     socket.off('users:online');
     socket.off('message:new');
     socket.off('message:read');
+    socket.off('message:deleted');
     socket.off('conversation:updated');
     socket.off('typing:update');
     socket.off('connect');
@@ -800,6 +858,47 @@ async function startApp() {
         return m;
       });
     });
+
+    socket.on(
+      'message:deleted',
+      (payload: {
+        conversationId: string;
+        messageIds: string[];
+        mode: 'self' | 'everyone';
+        actorUserId: string;
+      }) => {
+        if (payload.conversationId !== activeConversationId.value) return;
+        if (!Array.isArray(payload.messageIds) || payload.messageIds.length === 0) return;
+
+        if (payload.mode === 'self') {
+          messages.value = messages.value.filter((message) => !payload.messageIds.includes(message.id));
+
+          if (pinnedMessage.value && payload.messageIds.includes(pinnedMessage.value.id)) {
+            pinnedMessage.value = null;
+          }
+          return;
+        }
+
+        messages.value = messages.value.map((message) => {
+          if (!payload.messageIds.includes(message.id)) return message;
+          return {
+            ...message,
+            text: 'Сообщение удалено',
+            replyTo: null,
+            deletedForEveryoneAt: new Date().toISOString(),
+          };
+        });
+
+        if (pinnedMessage.value && payload.messageIds.includes(pinnedMessage.value.id)) {
+          pinnedMessage.value = {
+            ...pinnedMessage.value,
+            text: 'Сообщение удалено',
+            replyTo: null,
+            deletedForEveryoneAt: new Date().toISOString(),
+          };
+        }
+      }
+    );
 
     socket.on('message:new', async (payload: { message: Message }) => {
       const isActiveChatMessage = payload.message.conversationId === activeConversationId.value;
@@ -1012,6 +1111,8 @@ if (token.value) {
           @clear-reply="handleClearReply"
           @pin-message="handlePinMessage"
           @jump-to-message="handleJumpToMessage"
+          @delete-for-self="handleDeleteForSelf"
+          @delete-for-everyone="handleDeleteForEveryone"
         />
       </div>
 
