@@ -16,6 +16,7 @@ import {
   getConversationById,
   getConversationParticipants,
   getUserRoleInConversation,
+  markConversationAsRead,
 } from './services/conversations';
 
 const app = express();
@@ -233,7 +234,22 @@ io.on('connection', (socket) => {
       const allowed = await ensureUserInConversation(user.userId, conversationId);
       if (!allowed) return;
 
-      const readAt = new Date().toISOString();
+      await markConversationAsRead(conversationId, user.userId);
+
+      const [rows] = await pool.query(
+        `
+        SELECT created_at
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [conversationId]
+      );
+
+      const latestRows = rows as Array<{ created_at: string }>;
+      const readAt = latestRows[0]?.created_at || new Date().toISOString();
+
       const participants = await getConversationParticipants(conversationId);
       for (const p of participants) {
         if (p.userId !== user.userId) {
