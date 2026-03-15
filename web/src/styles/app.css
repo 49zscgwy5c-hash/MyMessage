@@ -1133,3 +1133,9 @@ button {
     padding-right: 22px;
   }
 }
+
+
+.tm-message-text--deleted {
+  font-style: italic;
+  opacity: 0.78;
+}

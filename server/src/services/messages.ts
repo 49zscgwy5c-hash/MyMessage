@@ -407,6 +407,25 @@ export async function deleteMessages(
       [currentUserId, conversationId, ...existingIds]
     );
 
+    if (existingIds.length > 0) {
+      const logValues = existingIds.map(() => '(?, ?, ?, NULL, ?)').join(', ');
+      const logParams = existingIds.flatMap((messageId) => [
+        messageId,
+        conversationId,
+        currentUserId,
+        mode,
+      ]);
+
+      await pool.query(
+        `
+        INSERT INTO message_deletion_log
+          (message_id, conversation_id, actor_user_id, target_user_id, mode)
+        VALUES ${logValues}
+        `,
+        logParams
+      );
+    }
+
     return { deletedMessageIds: existingIds, mode };
   }
 
@@ -420,6 +439,26 @@ export async function deleteMessages(
     `,
     insertParams
   );
+
+  if (existingIds.length > 0) {
+    const logValues = existingIds.map(() => '(?, ?, ?, ?, ?)').join(', ');
+    const logParams = existingIds.flatMap((messageId) => [
+      messageId,
+      conversationId,
+      currentUserId,
+      currentUserId,
+      mode,
+    ]);
+
+    await pool.query(
+      `
+      INSERT INTO message_deletion_log
+        (message_id, conversation_id, actor_user_id, target_user_id, mode)
+      VALUES ${logValues}
+      `,
+      logParams
+    );
+  }
 
   return { deletedMessageIds: existingIds, mode };
 }

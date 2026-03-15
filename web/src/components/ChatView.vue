@@ -701,7 +701,10 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <div class="tm-message-text">
+              <div
+                class="tm-message-text"
+                :class="{ 'tm-message-text--deleted': !!item.message.deletedForEveryoneAt }"
+              >
                 {{ item.message.text }}
               </div>
 
