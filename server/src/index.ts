@@ -14,6 +14,7 @@ import { createMessage } from './services/messages';
 import {
   ensureUserInConversation,
   getConversationById,
+  getConversationParticipants,
   getUserRoleInConversation,
 } from './services/conversations';
 
@@ -196,6 +197,15 @@ io.on('connection', (socket) => {
         isTyping: false,
       });
 
+      // Also notify every participant via their personal user room so that
+      // users who are not currently viewing this conversation (and thus are
+      // not subscribed to the conversation room) still receive a
+      // conversation:updated signal and can refresh their unread counts.
+      const participants = await getConversationParticipants(conversationId);
+      for (const p of participants) {
+        io.to(`user:${p.userId}`).emit('conversation:updated', { conversationId });
+      }
+
       callback?.({ ok: true, message });
     } catch (error) {
       console.error('message:send error', error);
@@ -211,8 +221,10 @@ io.on('connection', (socket) => {
   });
 
   // Emitted by a client after calling POST /conversations/:id/read.
-  // Broadcasts a `message:read` event to all other participants in the room so
-  // that senders can update the read-receipt (✓✓) on their messages in real-time.
+  // Broadcasts a `message:read` event to all other participants via their
+  // personal user rooms so that senders can update the read-receipt (✓✓) on
+  // their messages in real-time — even when they have navigated away from
+  // the conversation (and thus left the conversation socket room).
   socket.on('conversation:read', async (payload) => {
     try {
       const conversationId = String(payload?.conversationId || '');
@@ -221,10 +233,13 @@ io.on('connection', (socket) => {
       const allowed = await ensureUserInConversation(user.userId, conversationId);
       if (!allowed) return;
 
-      socket.to(`conversation:${conversationId}`).emit('message:read', {
-        conversationId,
-        readAt: new Date().toISOString(),
-      });
+      const readAt = new Date().toISOString();
+      const participants = await getConversationParticipants(conversationId);
+      for (const p of participants) {
+        if (p.userId !== user.userId) {
+          io.to(`user:${p.userId}`).emit('message:read', { conversationId, readAt });
+        }
+      }
     } catch (error) {
       console.error('conversation:read error', error);
     }
