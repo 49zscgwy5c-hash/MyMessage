@@ -54,6 +54,7 @@ const props = defineProps<{
   firstUnreadMessageId: string | null;
   replyToMessage: Message | null;
   pinnedMessage: Message | null;
+  scrollRevision: number;
 }>();
 
 const emit = defineEmits<{
@@ -413,6 +414,21 @@ watch(
       await nextTick();
       scrollToBottom();
     }
+  }
+);
+
+// Scroll to the bottom whenever the sender's own message arrives (scrollRevision
+// is incremented in App.vue inside the message:new handler for isMine messages).
+// This ensures the sender lands on their newly sent message regardless of whether
+// wasNearBottom was true or false at the time of sending.
+watch(
+  () => props.scrollRevision,
+  async (value) => {
+    // Guard: value is 0 on initial mount — only act when the revision is actually bumped.
+    if (!value) return;
+    if (props.isJumpMode) return;
+    await nextTick();
+    scrollToBottom();
   }
 );
 
