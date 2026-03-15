@@ -19,6 +19,9 @@ export type ChatMessage = {
   isRead?: boolean;
   replyTo: MessageReplySnippet | null;
   deletedForEveryoneAt?: string | null;
+  forwardedFromMessageId?: string | null;
+  forwardedFromUserId?: string | null;
+  forwardedFromUsername?: string | null;
 };
 
 type MessageRow = {
@@ -29,6 +32,9 @@ type MessageRow = {
   text: string;
   createdAt: string;
   deletedForEveryoneAt: string | null;
+  forwardedFromMessageId: string | null;
+  forwardedFromUserId: string | null;
+  forwardedFromUsername: string | null;
   replyToId: string | null;
   replyToUserId: string | null;
   replyToUsername: string | null;
@@ -47,6 +53,9 @@ function mapMessageRow(row: MessageRow): ChatMessage {
     text: isDeletedForEveryone ? 'Сообщение удалено' : row.text,
     createdAt: row.createdAt,
     deletedForEveryoneAt: row.deletedForEveryoneAt,
+    forwardedFromMessageId: row.forwardedFromMessageId || null,
+    forwardedFromUserId: row.forwardedFromUserId || null,
+    forwardedFromUsername: row.forwardedFromUsername || null,
     replyTo:
       isDeletedForEveryone || !row.replyToId
         ? null
@@ -105,6 +114,9 @@ export async function createMessage(
       m.text,
       m.created_at AS createdAt,
       m.deleted_for_everyone_at AS deletedForEveryoneAt,
+      m.forwarded_from_message_id AS forwardedFromMessageId,
+      m.forwarded_from_user_id AS forwardedFromUserId,
+      m.forwarded_from_username AS forwardedFromUsername,
       rm.id AS replyToId,
       rm.user_id AS replyToUserId,
       ru.username AS replyToUsername,
@@ -125,6 +137,116 @@ export async function createMessage(
     ...mapMessageRow(list[0]),
     isRead: false,
   };
+}
+
+
+export async function forwardMessages(
+  sourceConversationId: string,
+  targetConversationId: string,
+  currentUserId: string,
+  messageIds: string[]
+): Promise<ChatMessage[]> {
+  if (!messageIds.length) return [];
+
+  const placeholders = messageIds.map(() => '?').join(', ');
+
+  const [rows] = await pool.query(
+    `
+    SELECT
+      m.id,
+      m.text,
+      m.user_id AS originalUserId,
+      u.username AS originalUsername
+    FROM messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.conversation_id = ?
+      AND m.id IN (${placeholders})
+      AND NOT EXISTS (
+        SELECT 1
+        FROM message_hidden_for_users mhfu
+        WHERE mhfu.message_id = m.id
+          AND mhfu.user_id = ?
+      )
+    ORDER BY m.created_at ASC
+    `,
+    [sourceConversationId, ...messageIds, currentUserId]
+  );
+
+  const sourceMessages = rows as Array<{
+    id: string;
+    text: string;
+    originalUserId: string;
+    originalUsername: string;
+  }>;
+
+  const created: ChatMessage[] = [];
+
+  for (const message of sourceMessages) {
+    const id = uuidv4();
+
+    await pool.query(
+      `
+      INSERT INTO messages (
+        id,
+        conversation_id,
+        user_id,
+        text,
+        reply_to_message_id,
+        forwarded_from_message_id,
+        forwarded_from_user_id,
+        forwarded_from_username
+      )
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+      `,
+      [
+        id,
+        targetConversationId,
+        currentUserId,
+        message.text,
+        message.id,
+        message.originalUserId,
+        message.originalUsername,
+      ]
+    );
+
+    const [createdRows] = await pool.query(
+      `
+      SELECT
+        m.id,
+        m.conversation_id AS conversationId,
+        m.user_id AS userId,
+        u.username AS username,
+        m.text,
+        m.created_at AS createdAt,
+        m.deleted_for_everyone_at AS deletedForEveryoneAt,
+        m.forwarded_from_message_id AS forwardedFromMessageId,
+        m.forwarded_from_user_id AS forwardedFromUserId,
+        m.forwarded_from_username AS forwardedFromUsername,
+        rm.id AS replyToId,
+        rm.user_id AS replyToUserId,
+        ru.username AS replyToUsername,
+        rm.text AS replyToText,
+        rm.created_at AS replyToCreatedAt
+      FROM messages m
+      JOIN users u ON u.id = m.user_id
+      LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+      LEFT JOIN users ru ON ru.id = rm.user_id
+      WHERE m.id = ?
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    const list = createdRows as MessageRow[];
+    if (list[0]) {
+      created.push({
+        ...mapMessageRow(list[0]),
+        isRead: false,
+      });
+    }
+  }
+
+  return created;
 }
 
 export async function getMessagesByConversation(
@@ -156,6 +278,9 @@ export async function getMessagesByConversation(
       m.text,
       m.created_at AS createdAt,
       m.deleted_for_everyone_at AS deletedForEveryoneAt,
+      m.forwarded_from_message_id AS forwardedFromMessageId,
+      m.forwarded_from_user_id AS forwardedFromUserId,
+      m.forwarded_from_username AS forwardedFromUsername,
       rm.id AS replyToId,
       rm.user_id AS replyToUserId,
       ru.username AS replyToUsername,
