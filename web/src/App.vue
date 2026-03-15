@@ -164,7 +164,11 @@ const canSendMessage = computed(() => {
 
 const unreadMap = computed(() => {
   return conversations.value.reduce<Record<string, number>>((acc, conversation) => {
-    acc[conversation.id] = conversation.unreadCount || 0;
+    if (conversation.id === activeConversationId.value && isChatNearBottom.value) {
+      acc[conversation.id] = 0;
+    } else {
+      acc[conversation.id] = conversation.unreadCount || 0;
+    }
     return acc;
   }, {});
 });
@@ -757,6 +761,15 @@ async function startApp() {
     socket.off('message:read');
     socket.off('conversation:updated');
     socket.off('typing:update');
+    socket.off('connect');
+
+    socket.on('connect', () => {
+      const cid = activeConversationId.value;
+      if (cid) {
+        socket.emit('conversation:join', { conversationId: cid });
+        loadConversations();
+      }
+    });
 
     socket.on('users:online', (payload: { userIds: string[] }) => {
       onlineUserIds.value = payload.userIds || [];
@@ -813,7 +826,11 @@ async function startApp() {
 
           if (!isMine) {
             if (isChatNearBottom.value) {
-              await markConversationRead(payload.message.conversationId);
+              try {
+                await markConversationRead(payload.message.conversationId);
+              } catch {
+                // ignore transient read-mark errors so the realtime handler continues
+              }
 
               if (payload.message.conversationId === activeConversationId.value) {
                 pendingNewMessagesCount.value = 0;
