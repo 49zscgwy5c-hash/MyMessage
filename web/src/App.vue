@@ -164,7 +164,15 @@ const canSendMessage = computed(() => {
 
 const unreadMap = computed(() => {
   return conversations.value.reduce<Record<string, number>>((acc, conversation) => {
-    acc[conversation.id] = conversation.unreadCount || 0;
+    // When the user is actively viewing this conversation and is at the bottom,
+    // treat it as fully read regardless of what the server last returned.  This
+    // prevents a brief stale-count flash that occurs when conversation:updated
+    // fires before markConversationRead has completed in the message:new handler.
+    if (conversation.id === activeConversationId.value && isChatNearBottom.value) {
+      acc[conversation.id] = 0;
+    } else {
+      acc[conversation.id] = conversation.unreadCount || 0;
+    }
     return acc;
   }, {});
 });
@@ -757,6 +765,20 @@ async function startApp() {
     socket.off('message:read');
     socket.off('conversation:updated');
     socket.off('typing:update');
+    socket.off('connect');
+
+    // Re-join the active conversation room after a socket reconnection so that
+    // message:new (and therefore markConversationRead / read-receipt propagation)
+    // continues to work even after a brief network interruption.  On the initial
+    // connect activeConversationId is null, so the emit is a no-op.
+    socket.on('connect', () => {
+      const cid = activeConversationId.value;
+      if (cid) {
+        socket.emit('conversation:join', { conversationId: cid });
+        // Refresh conversation list to catch any updates missed during disconnect.
+        loadConversations();
+      }
+    });
 
     socket.on('users:online', (payload: { userIds: string[] }) => {
       onlineUserIds.value = payload.userIds || [];
@@ -813,7 +835,15 @@ async function startApp() {
 
           if (!isMine) {
             if (isChatNearBottom.value) {
-              await markConversationRead(payload.message.conversationId);
+              // Wrap in try/catch so that an API or network error during
+              // markConversationRead does not abort the handler and prevent
+              // loadConversations() from running at the end.
+              try {
+                await markConversationRead(payload.message.conversationId);
+              } catch {
+                // Silently ignore — the server will still broadcast
+                // conversation:updated which will refresh unread counts.
+              }
 
               if (payload.message.conversationId === activeConversationId.value) {
                 pendingNewMessagesCount.value = 0;
