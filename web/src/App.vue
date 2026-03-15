@@ -598,6 +598,34 @@ function clearSelection() {
   isSelectionMode.value = false;
 }
 
+function selectVisibleMessages() {
+  const visibleIds = messages.value
+    .map((message) => message.id)
+    .filter(Boolean);
+
+  selectedMessageIds.value = Array.from(new Set(visibleIds));
+  isSelectionMode.value = selectedMessageIds.value.length > 0;
+}
+
+async function copySelectedMessages() {
+  if (selectedMessageIds.value.length === 0) return;
+
+  const selectedMessages = messages.value.filter((message) =>
+    selectedMessageIds.value.includes(message.id)
+  );
+
+  const textToCopy = selectedMessages
+    .map((message) => {
+      const timestamp = new Date(message.createdAt).toLocaleString();
+      return `[${timestamp}] ${message.username}: ${message.text}`;
+    })
+    .join('\n');
+
+  if (!textToCopy) return;
+
+  await navigator.clipboard.writeText(textToCopy);
+}
+
 async function deleteSelectedForSelf() {
   if (selectedMessageIds.value.length === 0) return;
   await deleteMessages(selectedMessageIds.value, 'self');
@@ -1169,6 +1197,8 @@ if (token.value) {
           @delete-selected-for-self="deleteSelectedForSelf"
           @delete-selected-for-everyone="deleteSelectedForEveryone"
           @clear-selection="clearSelection"
+          @select-visible-messages="selectVisibleMessages"
+          @copy-selected-messages="copySelectedMessages"
         />
       </div>
 

@@ -80,6 +80,8 @@ const emit = defineEmits<{
   deleteSelectedForSelf: [];
   deleteSelectedForEveryone: [];
   clearSelection: [];
+  selectVisibleMessages: [];
+  copySelectedMessages: [];
 }>();
 
 const messagesEl = ref<HTMLElement | null>(null);
@@ -88,6 +90,8 @@ const scrollLockOlder = ref(false);
 const scrollLockNewer = ref(false);
 const savedScrollHeight = ref(0);
 const savedScrollTop = ref(0);
+let longPressTimer: number | null = null;
+let longPressTriggered = false;
 
 const contextMenu = ref<{
   visible: boolean;
@@ -307,8 +311,30 @@ function canDeleteSelectedForEveryone() {
 }
 
 function handleMessageClick(message: Message) {
+  if (longPressTriggered) {
+    longPressTriggered = false;
+    return;
+  }
+
   if (!props.isSelectionMode) return;
   emit('toggleMessageSelection', message.id);
+}
+
+function startLongPress(message: Message) {
+  cancelLongPress();
+  longPressTriggered = false;
+
+  longPressTimer = window.setTimeout(() => {
+    longPressTriggered = true;
+    emit('enterSelectionMode', message);
+  }, 500);
+}
+
+function cancelLongPress() {
+  if (longPressTimer) {
+    window.clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
 }
 
 function flashMessage(messageId: string) {
@@ -352,7 +378,41 @@ function handleGlobalClick(event: MouseEvent) {
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') hideContextMenu();
+  const metaOrCtrl = event.metaKey || event.ctrlKey;
+
+  if (props.isSelectionMode && event.key === 'Escape') {
+    emit('clearSelection');
+    hideContextMenu();
+    return;
+  }
+
+  if (!props.isSelectionMode && event.key === 'Escape') {
+    hideContextMenu();
+    return;
+  }
+
+  if (!props.isSelectionMode) return;
+
+  if (metaOrCtrl && event.key.toLowerCase() === 'a') {
+    event.preventDefault();
+    emit('selectVisibleMessages');
+    return;
+  }
+
+  if (metaOrCtrl && event.key.toLowerCase() === 'c') {
+    event.preventDefault();
+    emit('copySelectedMessages');
+    return;
+  }
+
+  if (event.key === 'Delete') {
+    event.preventDefault();
+    if (event.shiftKey && canDeleteSelectedForEveryone()) {
+      emit('deleteSelectedForEveryone');
+    } else {
+      emit('deleteSelectedForSelf');
+    }
+  }
 }
 
 // Locate the unread separator by message ID rather than by index arithmetic.
@@ -591,6 +651,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', handleGlobalClick);
   document.removeEventListener('keydown', handleKeydown);
   document.removeEventListener('contextmenu', handleGlobalContextMenu);
+  cancelLongPress();
   if (highlightTimer) window.clearTimeout(highlightTimer);
 });
 </script>
@@ -697,7 +758,19 @@ onBeforeUnmount(() => {
             ]"
             @contextmenu.prevent.stop="!props.isSelectionMode && openContextMenu($event, item.message)"
             @click="handleMessageClick(item.message)"
+            @touchstart.passive="startLongPress(item.message)"
+            @touchend="cancelLongPress"
+            @touchcancel="cancelLongPress"
+            @touchmove="cancelLongPress"
           >
+            <div
+              v-if="props.isSelectionMode"
+              class="tm-message-checkbox"
+              :class="{ 'is-selected': isSelected(item.message.id) }"
+            >
+              <span v-if="isSelected(item.message.id)">✓</span>
+            </div>
+
             <div
               v-if="!item.mine"
               class="tm-message-avatar"
@@ -877,6 +950,21 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="tm-selection-bar__actions">
+        <button
+          class="tm-selection-bar__btn"
+          @click="emit('selectVisibleMessages')"
+        >
+          ☑️ Выбрать видимые
+        </button>
+
+        <button
+          class="tm-selection-bar__btn"
+          :disabled="props.selectedMessageIds.length === 0"
+          @click="emit('copySelectedMessages')"
+        >
+          📋 Копировать
+        </button>
+
         <button
           class="tm-selection-bar__btn"
           :disabled="props.selectedMessageIds.length === 0"

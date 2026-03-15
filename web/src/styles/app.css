@@ -1205,3 +1205,47 @@ button {
 .tm-selection-bar__btn.secondary {
   background: rgba(88, 104, 120, 0.75);
 }
+
+
+.tm-message-checkbox {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 2px solid rgba(143, 176, 214, 0.8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+  margin-top: auto;
+  margin-bottom: 6px;
+  color: #fff;
+  background: rgba(40, 52, 66, 0.55);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tm-message-checkbox.is-selected {
+  background: rgba(75, 166, 255, 0.95);
+  border-color: rgba(75, 166, 255, 1);
+}
+
+@media (max-width: 700px) {
+  .tm-selection-bar {
+    bottom: 6px;
+    margin: 10px 8px 0;
+    padding: 10px;
+    border-radius: 12px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tm-selection-bar__actions {
+    width: 100%;
+  }
+
+  .tm-selection-bar__btn {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
