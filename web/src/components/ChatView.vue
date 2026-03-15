@@ -192,8 +192,11 @@ function onScroll() {
 
   notifyBottomState();
 
-  // Load older messages (scroll up)
-  if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder && !scrollLockOlder.value) {
+  // Load older messages (scroll up).
+  // Guard props.messages.length > 0: if the list is empty the lock would get
+  // stuck because loadOlderMessages returns early without ever setting
+  // loadingOlder = true, so the watcher that resets the lock never fires.
+  if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder && !scrollLockOlder.value && props.messages.length > 0) {
     scrollLockOlder.value = true;
     savedScrollHeight.value = el.scrollHeight;
     savedScrollTop.value = el.scrollTop;
@@ -353,6 +356,13 @@ watch(
   async () => {
     visibleKeys.value = new Set();
     isInitialLoad = true;
+    // Always clear scroll-lock state on conversation switch so a lock that was
+    // set in the previous session (e.g. via a scroll event on an empty list)
+    // cannot bleed into the newly opened conversation.
+    scrollLockOlder.value = false;
+    scrollLockNewer.value = false;
+    savedScrollHeight.value = 0;
+    savedScrollTop.value = 0;
     hideContextMenu();
     await nextTick();
     scrollToBottom();
@@ -420,15 +430,22 @@ watch(
     if (!loading && wasLoading) {
       if (savedScrollHeight.value > 0) {
         await nextTick();
-        requestAnimationFrame(() => {
-          if (!messagesEl.value) return;
-          const diff = messagesEl.value.scrollHeight - savedScrollHeight.value;
-          messagesEl.value.scrollTop = savedScrollTop.value + diff;
+        // Correct scroll position synchronously right after Vue's DOM update,
+        // before the browser gets a chance to paint.  Using requestAnimationFrame
+        // here would defer the correction to the next frame and cause a visible
+        // jump because the browser can paint the un-corrected position first.
+        if (!messagesEl.value) {
           savedScrollHeight.value = 0;
           savedScrollTop.value = 0;
           scrollLockOlder.value = false;
-          notifyBottomState();
-        });
+          return;
+        }
+        const diff = messagesEl.value.scrollHeight - savedScrollHeight.value;
+        messagesEl.value.scrollTop = savedScrollTop.value + diff;
+        savedScrollHeight.value = 0;
+        savedScrollTop.value = 0;
+        scrollLockOlder.value = false;
+        notifyBottomState();
       } else {
         scrollLockOlder.value = false;
       }
