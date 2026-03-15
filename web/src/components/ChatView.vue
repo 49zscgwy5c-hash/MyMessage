@@ -51,6 +51,7 @@ const props = defineProps<{
   loadingNewer: boolean;
   isJumpMode: boolean;
   pendingNewMessagesCount: number;
+  firstUnreadMessageId: string | null;
   replyToMessage: Message | null;
   pinnedMessage: Message | null;
 }>();
@@ -298,9 +299,14 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') hideContextMenu();
 }
 
+// Locate the unread separator by message ID rather than by index arithmetic.
+// An arithmetic approach (messages.length - pendingNewMessagesCount) drifts
+// whenever messages are prepended (load-older) or appended (load-newer in jump
+// mode) because those operations change messages.length while pendingNewMessagesCount
+// stays constant.  An ID-based lookup is stable across all pagination operations.
 const firstUnreadIndex = computed(() => {
-  if (props.pendingNewMessagesCount <= 0) return -1;
-  return Math.max(0, props.messages.length - props.pendingNewMessagesCount);
+  if (!props.firstUnreadMessageId) return -1;
+  return props.messages.findIndex((m) => m.id === props.firstUnreadMessageId);
 });
 
 const timeline = computed<TimelineItem[]>(() => {

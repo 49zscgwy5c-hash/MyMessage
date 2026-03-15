@@ -102,6 +102,12 @@ const loadingNewer = ref(false);
 const isJumpMode = ref(false);
 const isChatNearBottom = ref(true);
 const pendingNewMessagesCount = ref(0);
+// Stable anchor for the unread separator: holds the ID of the first message
+// that arrived while the user was away from the bottom.  Using a message ID
+// instead of an index-based calculation prevents the separator from drifting
+// when older or newer pages are loaded (which change messages.length but not
+// the absolute position of the anchor message).
+const firstUnreadMessageId = ref<string | null>(null);
 
 const replyToMessage = ref<Message | null>(null);
 const pinnedMessage = ref<Message | null>(null);
@@ -427,6 +433,7 @@ async function handleReachLatest() {
   if (!isChatNearBottom.value) return;
 
   pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
   await markConversationRead(activeConversationId.value);
   await loadConversations();
   // Messages are kept current via socket events; avoid unnecessary full reload here
@@ -439,6 +446,7 @@ async function handleJumpToLatest() {
   hasMoreNewer.value = false;
   isChatNearBottom.value = true;
   pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
 
   await markConversationRead(activeConversationId.value);
   await loadConversations();
@@ -520,6 +528,7 @@ async function openConversation(conversationId: string) {
   loadingNewer.value = false;
   typingText.value = '';
   pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
   replyToMessage.value = null;
 
   // Restore cached state immediately for instant display, or start with empty slate.
@@ -627,6 +636,7 @@ async function sendMessage() {
 
   isChatNearBottom.value = true;
   pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
 
   socket.emit(
     'message:send',
@@ -699,8 +709,13 @@ async function startApp() {
       if (isActiveChatMessage) {
         if (isJumpMode.value) {
           // In jump mode, don't append — user is viewing a historical segment.
-          // Only track unread count for messages from others.
+          // Track unread count and anchor for messages from others, but don't
+          // attempt to place the separator (the anchor message is not in the
+          // current list; the separator will be cleared when leaving jump mode).
           if (!isMine) {
+            if (firstUnreadMessageId.value === null) {
+              firstUnreadMessageId.value = payload.message.id;
+            }
             pendingNewMessagesCount.value += 1;
           }
         } else {
@@ -716,8 +731,13 @@ async function startApp() {
 
               if (payload.message.conversationId === activeConversationId.value) {
                 pendingNewMessagesCount.value = 0;
+                firstUnreadMessageId.value = null;
               }
             } else {
+              // Anchor the separator at the first unseen message and increment count.
+              if (firstUnreadMessageId.value === null) {
+                firstUnreadMessageId.value = payload.message.id;
+              }
               pendingNewMessagesCount.value += 1;
             }
           }
@@ -764,6 +784,7 @@ function logout() {
   isJumpMode.value = false;
   isChatNearBottom.value = true;
   pendingNewMessagesCount.value = 0;
+  firstUnreadMessageId.value = null;
   replyToMessage.value = null;
   pinnedMessage.value = null;
   onlineUserIds.value = [];
@@ -869,6 +890,7 @@ if (token.value) {
           :loading-newer="loadingNewer"
           :is-jump-mode="isJumpMode"
           :pending-new-messages-count="pendingNewMessagesCount"
+          :first-unread-message-id="firstUnreadMessageId"
           :reply-to-message="replyToMessage"
           :pinned-message="pinnedMessage"
           @open-info="isChatInfoModalOpen = true"
