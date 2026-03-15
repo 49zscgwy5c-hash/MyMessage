@@ -261,6 +261,46 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('message:deleted', async (payload) => {
+    try {
+      const conversationId = String(payload?.conversationId || '');
+      const mode = payload?.mode === 'everyone' ? 'everyone' : 'self';
+      const messageIds = Array.isArray(payload?.messageIds)
+        ? payload.messageIds.map((id: unknown) => String(id || '')).filter(Boolean)
+        : [];
+
+      if (!conversationId || messageIds.length === 0) return;
+
+      const allowed = await ensureUserInConversation(user.userId, conversationId);
+      if (!allowed) return;
+
+      if (mode === 'everyone') {
+        io.to(`conversation:${conversationId}`).emit('message:deleted', {
+          conversationId,
+          messageIds,
+          mode,
+          actorUserId: user.userId,
+        });
+
+        const participants = await getConversationParticipants(conversationId);
+        for (const p of participants) {
+          io.to(`user:${p.userId}`).emit('conversation:updated', { conversationId });
+        }
+      } else {
+        io.to(`user:${user.userId}`).emit('message:deleted', {
+          conversationId,
+          messageIds,
+          mode,
+          actorUserId: user.userId,
+        });
+
+        io.to(`user:${user.userId}`).emit('conversation:updated', { conversationId });
+      }
+    } catch (error) {
+      console.error('message:deleted error', error);
+    }
+  });
+
   socket.on('disconnect', () => {
     const current = onlineUsers.get(user.userId) || 0;
 

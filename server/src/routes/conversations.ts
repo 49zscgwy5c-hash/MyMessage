@@ -14,7 +14,7 @@ import {
   markConversationAsRead,
   updateParticipantRole,
 } from '../services/conversations';
-import { getMessagesByConversation, getMessagesAroundId } from '../services/messages';
+import { deleteMessages, getMessagesByConversation, getMessagesAroundId } from '../services/messages';
 
 const router = Router();
 
@@ -145,6 +145,48 @@ router.post('/:id/read', requireAuth, async (req, res) => {
 
   await markConversationAsRead(conversationId, req.user!.userId);
   return res.json({ ok: true });
+});
+
+router.post('/:id/messages/delete', requireAuth, async (req, res) => {
+  const rawId = req.params.id;
+  const conversationId = Array.isArray(rawId) ? rawId[0] : rawId;
+
+  if (!conversationId) {
+    return res.status(400).json({ error: 'conversationId required' });
+  }
+
+  const allowed = await ensureUserInConversation(req.user!.userId, conversationId);
+  if (!allowed) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const schema = z.object({
+    messageIds: z.array(z.string().min(1)).min(1).max(100),
+    mode: z.enum(['self', 'everyone']),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Invalid payload' });
+  }
+
+  try {
+    const result = await deleteMessages(
+      conversationId,
+      req.user!.userId,
+      parsed.data.messageIds,
+      parsed.data.mode
+    );
+
+    return res.json({ ok: true, ...result });
+  } catch (error: any) {
+    if (error?.message === 'FORBIDDEN_DELETE_FOR_EVERYONE') {
+      return res.status(403).json({ error: 'You can delete for everyone only your own messages' });
+    }
+
+    console.error('delete messages error', error);
+    return res.status(500).json({ error: 'Failed to delete messages' });
+  }
 });
 
 router.get('/:id/participants', requireAuth, async (req, res) => {
