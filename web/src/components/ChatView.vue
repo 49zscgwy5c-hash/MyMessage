@@ -174,10 +174,14 @@ function isNearBottom() {
 
 function notifyBottomState() {
   const near = isNearBottom();
+  const wasNear = wasNearBottom.value;
   wasNearBottom.value = near;
   emit('nearBottomChange', near);
 
-  if (near) emit('reachLatest');
+  // Only emit 'reachLatest' on the transition from not-near → near so that
+  // markConversationRead / loadConversations are not called on every scroll
+  // event while the user is already at the bottom.
+  if (near && !wasNear) emit('reachLatest');
 }
 
 function scrollToBottom() {
@@ -371,6 +375,11 @@ watch(
     scrollLockNewer.value = false;
     savedScrollHeight.value = 0;
     savedScrollTop.value = 0;
+    // Reset wasNearBottom to true so that the initial scrollToBottom() below
+    // does not trigger a spurious 'reachLatest' emission via the not-near→near
+    // transition check in notifyBottomState.  Read marking for the newly opened
+    // conversation is handled explicitly by openConversation in App.vue.
+    wasNearBottom.value = true;
     hideContextMenu();
     await nextTick();
     scrollToBottom();
@@ -396,7 +405,11 @@ watch(
 watch(
   () => props.pendingNewMessagesCount,
   async (value, prev) => {
-    if (value === 0 && prev > 0) {
+    // When the pending count resets to zero (e.g. user scrolled to bottom or
+    // sent a message), scroll to the bottom so the latest messages are visible.
+    // Skip this in jump mode: the user is intentionally viewing a historical
+    // segment and jump-to-latest is handled by its own explicit path.
+    if (value === 0 && prev > 0 && !props.isJumpMode) {
       await nextTick();
       scrollToBottom();
     }

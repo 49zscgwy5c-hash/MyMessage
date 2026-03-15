@@ -56,6 +56,11 @@ type Participant = {
  * Snapshot of per-conversation message state stored in the in-memory cache.
  * Jump-mode entries are intentionally not restored on revisit so that users
  * always return to the latest messages rather than a stale historical position.
+ *
+ * Unread state (firstUnreadMessageId / pendingNewMessagesCount) is persisted so
+ * that when the user returns to a conversation they had partially read with an
+ * active separator, the separator is still visible until they scroll to the
+ * bottom (at which point handleReachLatest clears it and marks the chat read).
  */
 type ConversationCache = {
   messages: Message[];
@@ -63,6 +68,8 @@ type ConversationCache = {
   hasMoreNewer: boolean;
   isJumpMode: boolean;
   pinnedMessage: Message | null;
+  firstUnreadMessageId: string | null;
+  pendingNewMessagesCount: number;
 };
 
 const MAX_CACHE_SIZE = 10;
@@ -316,6 +323,8 @@ function saveConversationToCache(conversationId: string) {
     hasMoreNewer: hasMoreNewer.value,
     isJumpMode: isJumpMode.value,
     pinnedMessage: pinnedMessage.value,
+    firstUnreadMessageId: firstUnreadMessageId.value,
+    pendingNewMessagesCount: pendingNewMessagesCount.value,
   });
   if (conversationCache.size > MAX_CACHE_SIZE) {
     // Use a loop in case multiple entries were somehow added beyond the limit.
@@ -432,15 +441,26 @@ async function handleReachLatest() {
   if (!activeConversationId.value) return;
   if (!isChatNearBottom.value) return;
 
+  // Capture the conversation ID so that the async calls below can be guarded
+  // against a conversation switch that might happen while they are in-flight.
+  const conversationId = activeConversationId.value;
+
+  // Clear unread state synchronously as part of the "user reached the bottom"
+  // transition so the separator and pending-count badge disappear immediately.
   pendingNewMessagesCount.value = 0;
   firstUnreadMessageId.value = null;
-  await markConversationRead(activeConversationId.value);
+
+  await markConversationRead(conversationId);
+  if (activeConversationId.value !== conversationId) return;
+
   await loadConversations();
-  // Messages are kept current via socket events; avoid unnecessary full reload here
+  if (activeConversationId.value !== conversationId) return;
 }
 
 async function handleJumpToLatest() {
   if (!activeConversationId.value) return;
+
+  const conversationId = activeConversationId.value;
 
   isJumpMode.value = false;
   hasMoreNewer.value = false;
@@ -448,9 +468,13 @@ async function handleJumpToLatest() {
   pendingNewMessagesCount.value = 0;
   firstUnreadMessageId.value = null;
 
-  await markConversationRead(activeConversationId.value);
+  await markConversationRead(conversationId);
+  if (activeConversationId.value !== conversationId) return;
+
   await loadConversations();
-  await loadMessages(activeConversationId.value);
+  if (activeConversationId.value !== conversationId) return;
+
+  await loadMessages(conversationId);
 }
 
 function handleReplyToMessage(message: Message) {
@@ -524,11 +548,15 @@ async function openConversation(conversationId: string) {
   conversationContextTokens.set(conversationId, newContextToken);
 
   activeConversationId.value = conversationId;
+  // Explicitly assume the user is at the bottom when opening a conversation.
+  // ChatView's conversation-change watcher will call scrollToBottom() which
+  // confirms this via notifyBottomState → nearBottomChange.  Setting it here
+  // ensures the openConversation guard further below sees the correct value
+  // even in the brief window before ChatView's async watcher fires.
+  isChatNearBottom.value = true;
   loadingOlder.value = false;
   loadingNewer.value = false;
   typingText.value = '';
-  pendingNewMessagesCount.value = 0;
-  firstUnreadMessageId.value = null;
   replyToMessage.value = null;
 
   // Restore cached state immediately for instant display, or start with empty slate.
@@ -540,12 +568,23 @@ async function openConversation(conversationId: string) {
     hasMoreNewer.value = cached.hasMoreNewer;
     isJumpMode.value = false;
     pinnedMessage.value = cached.pinnedMessage;
+    // Restore unread state only when the anchor message is still present in the
+    // cached list.  If the message has since been evicted or the cache is
+    // otherwise inconsistent, reset to a clean unread-free state so the user
+    // never sees a stale or orphaned separator.
+    const anchorPresent =
+      cached.firstUnreadMessageId !== null &&
+      cached.messages.some((m) => m.id === cached.firstUnreadMessageId);
+    firstUnreadMessageId.value = anchorPresent ? cached.firstUnreadMessageId : null;
+    pendingNewMessagesCount.value = anchorPresent ? cached.pendingNewMessagesCount : 0;
   } else {
     messages.value = [];
     hasMoreOlder.value = true;
     hasMoreNewer.value = false;
     isJumpMode.value = false;
     pinnedMessage.value = null;
+    firstUnreadMessageId.value = null;
+    pendingNewMessagesCount.value = 0;
   }
 
   const socket = getSocket();
@@ -557,10 +596,29 @@ async function openConversation(conversationId: string) {
   await loadMessages(conversationId);
   if (activeConversationId.value !== conversationId) return;
 
+  // After a fresh load, the cached unread anchor may no longer be present in
+  // the new message list (the server returned a different window).  Clear the
+  // stale state so the pending-count button and separator stay consistent.
+  if (
+    firstUnreadMessageId.value !== null &&
+    !messages.value.some((m) => m.id === firstUnreadMessageId.value)
+  ) {
+    firstUnreadMessageId.value = null;
+    pendingNewMessagesCount.value = 0;
+    // Re-persist the corrected state so a quick switch-away/switch-back does
+    // not resurrect the now-invalid anchor.
+    saveConversationToCache(conversationId);
+  }
+
   await loadParticipants(conversationId);
   if (activeConversationId.value !== conversationId) return;
 
   if (isChatNearBottom.value) {
+    // User is at the bottom — unread state is no longer meaningful.  Clear it
+    // explicitly before marking the conversation read so that the separator and
+    // pending count disappear as part of the same synchronous state update.
+    pendingNewMessagesCount.value = 0;
+    firstUnreadMessageId.value = null;
     await markConversationRead(conversationId);
     if (activeConversationId.value !== conversationId) return;
 
