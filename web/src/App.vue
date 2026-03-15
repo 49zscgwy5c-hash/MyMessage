@@ -118,6 +118,10 @@ const firstUnreadMessageId = ref<string | null>(null);
 
 const replyToMessage = ref<Message | null>(null);
 const pinnedMessage = ref<Message | null>(null);
+// Incremented each time the sender's own message arrives via socket so that
+// ChatView can watch this value and deterministically scroll to the new message
+// regardless of whether wasNearBottom was true or false.
+const scrollRevision = ref(0);
 
 const onlineUserIds = ref<string[]>([]);
 const typingText = ref('');
@@ -431,6 +435,13 @@ async function loadParticipants(conversationId: string) {
 
 async function markConversationRead(conversationId: string) {
   await api.post(`/conversations/${conversationId}/read`);
+  // Notify other participants in real-time that this user has read the conversation.
+  // The server will broadcast a `message:read` event to the room so that the sender
+  // can update the read-receipt (✓✓) on their messages without a full reload.
+  const socket = getSocket();
+  if (socket) {
+    socket.emit('conversation:read', { conversationId });
+  }
 }
 
 function handleNearBottomChange(value: boolean) {
@@ -743,6 +754,7 @@ async function startApp() {
 
     socket.off('users:online');
     socket.off('message:new');
+    socket.off('message:read');
     socket.off('conversation:updated');
     socket.off('typing:update');
 
@@ -758,6 +770,22 @@ async function startApp() {
       } else {
         typingText.value = '';
       }
+    });
+
+    // Realtime read-receipt: update isRead on the current user's messages when
+    // another participant marks the conversation as read.
+    socket.on('message:read', (payload: { conversationId: string; readAt: string }) => {
+      if (payload.conversationId !== activeConversationId.value) return;
+
+      const readAtMs = new Date(payload.readAt).getTime();
+      messages.value = messages.value.map((m) => {
+        if (m.username === currentUser.value?.username && !m.isRead) {
+          if (new Date(m.createdAt).getTime() <= readAtMs) {
+            return { ...m, isRead: true };
+          }
+        }
+        return m;
+      });
     });
 
     socket.on('message:new', async (payload: { message: Message }) => {
@@ -798,6 +826,10 @@ async function startApp() {
               }
               pendingNewMessagesCount.value += 1;
             }
+          } else {
+            // Own message arrived: trigger an explicit scroll to the new message so
+            // the sender lands on it regardless of their previous scroll position.
+            scrollRevision.value += 1;
           }
         }
       }
@@ -809,9 +841,8 @@ async function startApp() {
       await loadConversations();
     });
 
-    if (conversations.value.length > 0) {
-      await openConversation(conversations.value[0].id);
-    }
+    // Do not auto-open any conversation on page load/refresh.
+    // The user must explicitly click a conversation in the sidebar.
   } catch (error: any) {
     if (error?.response?.status === 401) {
       logout();
@@ -951,6 +982,7 @@ if (token.value) {
           :first-unread-message-id="firstUnreadMessageId"
           :reply-to-message="replyToMessage"
           :pinned-message="pinnedMessage"
+          :scroll-revision="scrollRevision"
           @open-info="isChatInfoModalOpen = true"
           @update-text="text = $event"
           @send="sendMessage"

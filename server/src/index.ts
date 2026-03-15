@@ -203,6 +203,33 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('conversation:leave', (payload) => {
+    const conversationId = String(payload?.conversationId || '');
+    if (conversationId) {
+      socket.leave(`conversation:${conversationId}`);
+    }
+  });
+
+  // Emitted by a client after calling POST /conversations/:id/read.
+  // Broadcasts a `message:read` event to all other participants in the room so
+  // that senders can update the read-receipt (✓✓) on their messages in real-time.
+  socket.on('conversation:read', async (payload) => {
+    try {
+      const conversationId = String(payload?.conversationId || '');
+      if (!conversationId) return;
+
+      const allowed = await ensureUserInConversation(user.userId, conversationId);
+      if (!allowed) return;
+
+      socket.to(`conversation:${conversationId}`).emit('message:read', {
+        conversationId,
+        readAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('conversation:read error', error);
+    }
+  });
+
   socket.on('disconnect', () => {
     const current = onlineUsers.get(user.userId) || 0;
 
